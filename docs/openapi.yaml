@@ -1,0 +1,441 @@
+openapi: 3.0.3
+info:
+  title: Наш банк — API интернет-банка
+  version: 1.4.0
+  description: |
+    Контракт API интернет-банка. Этот документ описывает требуемое
+    поведение сервиса.
+
+    Общие правила:
+      * все ответы имеют тело вида `{ "success": true, "data": ... }`
+        либо `{ "success": false, "message": "...", "code": "..." }`;
+      * ошибки валидации и бизнес-логики возвращаются с кодом 4xx;
+      * ответы, содержащие персональные данные, не кэшируются публично;
+      * сообщения об ошибках не раскрывают внутренние детали сервиса.
+
+servers:
+  - url: /
+    description: Текущий стенд
+
+tags:
+  - name: auth
+    description: Аутентификация и сессии
+  - name: accounts
+    description: Счета клиента
+  - name: cards
+    description: Банковские карты
+  - name: operations
+    description: История и переводы
+  - name: admin
+    description: Служебные разделы
+  - name: test
+    description: Управление состоянием стенда
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Вход по логину и паролю
+      description: |
+        Проверяет логин и пароль и выдаёт токен доступа.
+
+        После трёх неверных паролей подряд вход блокируется на 5 минут.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: { type: string, example: ivanov }
+                password: { type: string, example: password123 }
+      responses:
+        '200':
+          description: Вход выполнен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string }
+                      user: { $ref: '#/components/schemas/User' }
+        '401':
+          description: Неверный логин или пароль
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '423':
+          description: Учётная запись временно заблокирована
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Выход из аккаунта
+      description: Выданный токен становится недействительным для всех последующих запросов.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Выход выполнен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    properties:
+                      loggedOut: { type: boolean, enum: [true] }
+        '401':
+          description: Требуется авторизация
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/me:
+    get:
+      tags: [auth]
+      summary: Текущий пользователь
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/User' }
+        '401':
+          description: Требуется авторизация
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/accounts:
+    get:
+      tags: [accounts]
+      summary: Счета текущего клиента
+      description: Возвращает только счета владельца токена. Ответ не кэшируется публично.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Список счетов
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: Ожидается `private, no-store` или `no-cache`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Account' }
+        '401':
+          description: Требуется авторизация
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/accounts/{id}:
+    get:
+      tags: [accounts]
+      summary: Счёт по идентификатору
+      description: Счёт другого клиента недоступен.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, example: acc-1 }
+      responses:
+        '200':
+          description: Счёт
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/Account' }
+        '403':
+          description: Счёт принадлежит другому клиенту
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Счёт не найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/cards:
+    get:
+      tags: [cards]
+      summary: Карты текущего клиента
+      description: |
+        Полные реквизиты карты (номер и CVV) в ответе не передаются.
+        Клиент получает только маску номера; полные реквизиты приходят
+        отдельным защищённым каналом.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Список карт
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Card' }
+
+  /api/transactions:
+    get:
+      tags: [operations]
+      summary: История операций по счёту
+      description: |
+        Поиск по `q` выполняется по всем операциям счёта с учётом
+        остальных фильтров. Фильтр `period=today` отбирает операции за
+        текущие сутки по локальному времени клиента.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema: { type: string, example: acc-1 }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        - name: q
+          in: query
+          description: Подстрока для поиска по контрагенту и категории
+          schema: { type: string }
+        - name: period
+          in: query
+          schema: { type: string, enum: [all, today], default: all }
+        - name: direction
+          in: query
+          schema: { type: string, enum: [all, in, out], default: all }
+        - name: sort
+          in: query
+          description: Сортировка по сумме выполняется как сортировка чисел
+          schema: { type: string, enum: [date, amount, amount-desc], default: date }
+      responses:
+        '200':
+          description: Страница операций
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/TransactionPage' }
+
+  /api/transfers:
+    post:
+      tags: [operations]
+      summary: Перевод между счетами или по реквизитам получателя
+      description: |
+        Правила:
+          * сумма — положительное число, строго больше нуля;
+          * разделитель дробной части во входной строке — запятая
+            (`100,50` — это 100 рублей 50 копеек);
+          * перевод не может превысить доступный остаток;
+          * перевод не может привести к отрицательному балансу;
+          * комиссия 1,5 % с округлением до копеек, между своими
+            счетами — 0;
+          * дневной лимит 1 000 Br на счёт;
+          * повторный запрос с тем же `Idempotency-Key` не создаёт
+            вторую операцию.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string }
+          description: Ключ идемпотентности операции
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromAccountId, amount]
+              properties:
+                fromAccountId: { type: string, example: acc-1 }
+                toAccountId: { type: string, description: Для перевода между своими счетами }
+                recipient: { type: string, description: Номер карты или телефона получателя }
+                amount: { type: string, example: '100,50' }
+                comment: { type: string }
+      responses:
+        '200':
+          description: Перевод выполнен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/TransferResult' }
+        '400':
+          description: |
+            Некорректная сумма, недостаточно средств или превышен
+            дневной лимит
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Требуется авторизация
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Счёт списания принадлежит другому клиенту
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/operations:
+    get:
+      tags: [admin]
+      summary: Операции всех клиентов
+      description: Доступно только пользователям с ролью `admin`.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Операции
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Transaction' }
+                      total: { type: integer }
+        '403':
+          description: Недостаточно прав
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/__test__/reset:
+    post:
+      tags: [test]
+      summary: Сброс состояния стенда к исходному
+      parameters:
+        - name: keepSession
+          in: query
+          schema: { type: string, enum: ['1'] }
+          description: Сохранить текущую сессию
+      responses:
+        '200':
+          description: Состояние сброшено
+
+  /api/__test__/state:
+    get:
+      tags: [test]
+      summary: Текущее состояние стенда
+      responses:
+        '200':
+          description: Снимок состояния
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, enum: [false] }
+        message: { type: string }
+        code: { type: string, example: INSUFFICIENT_FUNDS }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, example: u-1 }
+        login: { type: string, example: ivanov }
+        fullName: { type: string, example: Иван Иванов }
+        role: { type: string, enum: [user, admin] }
+        phone: { type: string, example: '+375 29 000-00-01' }
+
+    Account:
+      type: object
+      properties:
+        id: { type: string, example: acc-1 }
+        ownerId: { type: string, example: u-1 }
+        title: { type: string, example: Текущий счёт }
+        number: { type: string, example: '40817810099910004312' }
+        currency: { type: string, enum: [BYN] }
+        balance: { type: number, example: 1284.51 }
+        kind: { type: string, enum: [current, savings, card] }
+
+    Card:
+      type: object
+      description: Реквизиты карты в маскированном виде
+      properties:
+        id: { type: string, example: card-1 }
+        ownerId: { type: string, example: u-1 }
+        accountId: { type: string, example: acc-1 }
+        maskedPan: { type: string, example: '4276 •••• •••• 5678' }
+        expiry: { type: string, example: '12/27' }
+        holder: { type: string, example: IVAN IVANOV }
+        blocked: { type: boolean }
+        dailyLimit: { type: number, example: 1500 }
+
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, example: tx-0001 }
+        accountId: { type: string, example: acc-1 }
+        counterparty: { type: string, example: Пятёрочка }
+        amount: { type: number, example: 12.9 }
+        direction: { type: string, enum: [in, out] }
+        category: { type: string, example: Супермаркеты }
+        status: { type: string, enum: [done, pending, failed] }
+        createdAt: { type: string, format: date-time }
+        comment: { type: string }
+
+    TransactionPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Transaction' }
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer, description: Общее число операций, удовлетворяющих фильтрам }
+        hasMore: { type: boolean }
+
+    TransferResult:
+      type: object
+      properties:
+        transaction: { $ref: '#/components/schemas/Transaction' }
+        fee: { type: number, example: 1.51 }
+        total: { type: number, example: 102.01 }
+        balance: { type: number, example: 1182.5 }
